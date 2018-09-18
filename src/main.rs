@@ -2,13 +2,13 @@
 extern crate nom;
 
 use std::any::Any;
-use std::cmp::{Ordering, Ord, PartialEq, PartialOrd, Eq};
+use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 
-use std::hash::{Hash, Hasher};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::mem;
-use std::ops::{Add, Sub, Mul, Div, Drop};
+use std::ops::{Add, Div, Drop, Mul, Sub};
 use std::rc::Rc;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, PartialOrd, Ord)]
@@ -39,7 +39,7 @@ impl fmt::Display for Type {
             Type::Function => "function",
             Type::Userdata => "userdata",
             Type::Thread => "thread",
-            Type::Table => "table"
+            Type::Table => "table",
         })
     }
 }
@@ -132,7 +132,7 @@ impl Value {
             match self.type_of() {
                 Type::Nil => false,
                 Type::Number => LuaNumber::from_value_raw(self) == &::std::f32::NAN,
-                _ => true
+                _ => true,
             }
         }
     }
@@ -141,17 +141,14 @@ impl Value {
             match self.type_of() {
                 Type::Nil => false,
                 Type::Boolean => *LuaBool::from_value_raw(self),
-                _ => true
+                _ => true,
             }
         }
     }
     pub fn get_index(&self, index: &Value) -> Value {
-        if let Some(table) = LuaTable::from_value(self) {
-            let val: Option<Value> = table.get(index).cloned();
-            val.unwrap_or_else(|| Value::nil())
-        } else {
-            Value::nil()
-        }
+        LuaTable::from_value(self)
+            .and_then(|table| table.get(index).cloned())
+            .unwrap_or_else(Value::nil)
     }
 
     unsafe fn drop<T>(&mut self) {
@@ -159,15 +156,24 @@ impl Value {
         mem::swap(&mut self.data, &mut other);
         let _: Rc<InnerValueData<T>> = mem::transmute(other);
     }
-    unsafe fn num_binop<F>(a: &Value, b: &Value, op_str: &str, op: F) -> Value where F:Fn(LuaNumber, LuaNumber) -> LuaNumber {
+    unsafe fn num_binop<F>(a: &Value, b: &Value, op_str: &str, op: F) -> Value
+    where
+        F: Fn(LuaNumber, LuaNumber) -> LuaNumber,
+    {
         let (a_ty, b_ty) = (a.type_of(), b.type_of());
         if a_ty != b_ty {
-            panic!("cannot resolve {} {} {}; cannot add {} and {}; must be same type", a, op_str, b, a_ty, b_ty);
+            panic!(
+                "cannot resolve {} {} {}; cannot add {} and {}; must be same type",
+                a, op_str, b, a_ty, b_ty
+            );
         }
         if a_ty != Type::Number {
             panic!("cannot add non-number values {}", a_ty);
         }
-        LuaNumber::into_value(op(*LuaNumber::from_value_raw(a), *LuaNumber::from_value_raw(b)))
+        LuaNumber::into_value(op(
+            *LuaNumber::from_value_raw(a),
+            *LuaNumber::from_value_raw(b),
+        ))
     }
 }
 impl fmt::Display for Value {
@@ -191,9 +197,7 @@ impl Add for Value {
 impl<'a> Add for &'a Value {
     type Output = Value;
     fn add(self: Self, other: Self) -> Self::Output {
-        unsafe {
-            Value::num_binop(self, other, "+", LuaNumber::add)
-        }
+        unsafe { Value::num_binop(self, other, "+", LuaNumber::add) }
     }
 }
 impl Sub for Value {
@@ -205,9 +209,7 @@ impl Sub for Value {
 impl<'a> Sub for &'a Value {
     type Output = Value;
     fn sub(self: Self, other: Self) -> Self::Output {
-        unsafe {
-            Value::num_binop(self, other, "-", LuaNumber::sub)
-        }
+        unsafe { Value::num_binop(self, other, "-", LuaNumber::sub) }
     }
 }
 impl Mul for Value {
@@ -219,9 +221,7 @@ impl Mul for Value {
 impl<'a> Mul for &'a Value {
     type Output = Value;
     fn mul(self: Self, other: Self) -> Self::Output {
-        unsafe {
-            Value::num_binop(self, other, "*", LuaNumber::mul)
-        }
+        unsafe { Value::num_binop(self, other, "*", LuaNumber::mul) }
     }
 }
 impl Div for Value {
@@ -233,23 +233,25 @@ impl Div for Value {
 impl<'a> Div for &'a Value {
     type Output = Value;
     fn div(self: Self, other: Self) -> Self::Output {
-        unsafe {
-            Value::num_binop(self, other, "/", LuaNumber::add)
-        }
+        unsafe { Value::num_binop(self, other, "/", LuaNumber::add) }
     }
 }
-impl Eq for Value {
-}
+impl Eq for Value {}
 impl Hash for Value {
-    fn hash<H>(&self, state: &mut H) where H: Hasher {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
         self.data.ty.hash(state);
         unsafe {
             match self.type_of() {
                 Type::Nil => ().hash(state),
                 Type::Boolean => bool::from_value_raw(self).hash(state),
-                Type::Number => mem::transmute::<_,&i32>(LuaNumber::from_value_raw(self)).hash(state),
+                Type::Number => {
+                    (&*(LuaNumber::from_value_raw(self) as *const f32 as *const i32)).hash(state)
+                }
                 Type::Table => LuaTable::from_value_raw(self).hash(state),
-                _ => unimplemented!()
+                _ => unimplemented!(),
             }
         }
     }
@@ -265,7 +267,9 @@ impl PartialEq for Value {
                 match ty {
                     Type::Nil => true,
                     Type::Boolean => bool::from_value_raw(self) == bool::from_value_raw(other),
-                    Type::Number => LuaNumber::from_value_raw(self) == LuaNumber::from_value_raw(other),
+                    Type::Number => {
+                        LuaNumber::from_value_raw(self) == LuaNumber::from_value_raw(other)
+                    }
                     _ => unimplemented!(),
                 }
             }
@@ -282,10 +286,9 @@ impl Ord for Value {
             unsafe {
                 match ty {
                     Type::Nil => Ordering::Equal,
-                    Type::Boolean => Ord::cmp(
-                        bool::from_value_raw(self),
-                        bool::from_value_raw(other),
-                    ),
+                    Type::Boolean => {
+                        Ord::cmp(bool::from_value_raw(self), bool::from_value_raw(other))
+                    }
                     Type::Number => PartialOrd::partial_cmp(
                         LuaNumber::from_value_raw(self),
                         LuaNumber::from_value_raw(other),
