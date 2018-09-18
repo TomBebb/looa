@@ -5,11 +5,11 @@ use std::any::Any;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
-use std::ops::{Add, Div, Drop, Mul, Sub};
+use std::ops::{Add, Div, Drop, Mul, Neg, Sub};
 use std::rc::Rc;
+use std::{fmt, str};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, PartialOrd, Ord)]
 pub enum Type {
@@ -76,9 +76,11 @@ pub trait ConvertValue: Sized {
 pub type LuaNil = ();
 pub type LuaBool = bool;
 pub type LuaNumber = f32;
-pub type LuaString = Box<u8>;
+pub type LuaString = Box<[u8]>;
 pub type LuaUserdata = Box<Any>;
 pub type LuaTable = BTreeMap<Value, Value>;
+pub type LuaFunction = Box<Fn(Box<[Value]>) -> Value>;
+const LUA_NAN: LuaNumber = ::std::f32::NAN;
 
 impl ConvertValue for LuaNil {
     const TYPE: Type = Type::Nil;
@@ -131,7 +133,7 @@ impl Value {
         unsafe {
             match self.type_of() {
                 Type::Nil => false,
-                Type::Number => LuaNumber::from_value_raw(self) == &::std::f32::NAN,
+                Type::Number => LuaNumber::from_value_raw(self) == &LUA_NAN,
                 _ => true,
             }
         }
@@ -150,30 +152,31 @@ impl Value {
             .and_then(|table| table.get(index).cloned())
             .unwrap_or_else(Value::nil)
     }
+    /// Coerce into number
+    pub fn as_number(&self) -> LuaNumber {
+        unsafe {
+            match self.type_of() {
+                Type::Number => *LuaNumber::from_value_raw(self),
+                Type::String => {
+                    let bytes = LuaString::from_value_raw(self);
+                    let slice = str::from_utf8_unchecked(&*bytes);
+                    slice.parse().unwrap_or(LUA_NAN)
+                }
+                _ => LUA_NAN,
+            }
+        }
+    }
 
     unsafe fn drop<T>(&mut self) {
         let mut other = Rc::new(ValueData { ty: Type::Nil });
         mem::swap(&mut self.data, &mut other);
         let _: Rc<InnerValueData<T>> = mem::transmute(other);
     }
-    unsafe fn num_binop<F>(a: &Value, b: &Value, op_str: &str, op: F) -> Value
+    fn num_binop<F>(a: &Value, b: &Value, op: F) -> Value
     where
         F: Fn(LuaNumber, LuaNumber) -> LuaNumber,
     {
-        let (a_ty, b_ty) = (a.type_of(), b.type_of());
-        if a_ty != b_ty {
-            panic!(
-                "cannot resolve {} {} {}; cannot add {} and {}; must be same type",
-                a, op_str, b, a_ty, b_ty
-            );
-        }
-        if a_ty != Type::Number {
-            panic!("cannot add non-number values {}", a_ty);
-        }
-        LuaNumber::into_value(op(
-            *LuaNumber::from_value_raw(a),
-            *LuaNumber::from_value_raw(b),
-        ))
+        LuaNumber::into_value(op(a.as_number(), b.as_number()))
     }
 }
 impl fmt::Display for Value {
@@ -197,7 +200,7 @@ impl Add for Value {
 impl<'a> Add for &'a Value {
     type Output = Value;
     fn add(self: Self, other: Self) -> Self::Output {
-        unsafe { Value::num_binop(self, other, "+", LuaNumber::add) }
+        Value::num_binop(self, other, LuaNumber::add)
     }
 }
 impl Sub for Value {
@@ -209,7 +212,7 @@ impl Sub for Value {
 impl<'a> Sub for &'a Value {
     type Output = Value;
     fn sub(self: Self, other: Self) -> Self::Output {
-        unsafe { Value::num_binop(self, other, "-", LuaNumber::sub) }
+        Value::num_binop(self, other, LuaNumber::sub)
     }
 }
 impl Mul for Value {
@@ -221,7 +224,7 @@ impl Mul for Value {
 impl<'a> Mul for &'a Value {
     type Output = Value;
     fn mul(self: Self, other: Self) -> Self::Output {
-        unsafe { Value::num_binop(self, other, "*", LuaNumber::mul) }
+        Value::num_binop(self, other, LuaNumber::mul)
     }
 }
 impl Div for Value {
@@ -233,7 +236,13 @@ impl Div for Value {
 impl<'a> Div for &'a Value {
     type Output = Value;
     fn div(self: Self, other: Self) -> Self::Output {
-        unsafe { Value::num_binop(self, other, "/", LuaNumber::add) }
+        Value::num_binop(self, other, LuaNumber::add)
+    }
+}
+impl<'a> Neg for &'a Value {
+    type Output = Value;
+    fn neg(self) -> Value {
+        (-self.as_number()).into_value()
     }
 }
 impl Eq for Value {}
